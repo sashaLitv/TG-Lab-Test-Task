@@ -3,7 +3,14 @@ from dotenv import find_dotenv, load_dotenv
 from ultralytics import YOLO
 import os
 import shutil
+from pathlib import Path
+from PIL import Image
+import torch
+from torchmetrics.detection import MeanAveragePrecision
+from ultralytics import YOLO
 
+
+# CONSTANTS
 MY_DATASET_DIR_NAME = "Bird Detection"    
 MY_DATASET_ARCHIVE_NAME = "Bird.Detection"
 DATASET_DIR_NAME = "Bird Detection 8classes"    
@@ -12,6 +19,7 @@ BASE_MODEL_NAME = "weights/base.pt"
 FINETUNED_MODEL_NAME = "weights/best.pt"
 
 
+# DOWLOAD DATASET USING ROBOFLOW API OR FALLBACK TO GITHUB RELEASE
 def _download_roboflow_dataset(workspace_name: str, project_name: str, version_num: int, api_key: str, target_dir: str) -> str:
     '''
         Authenticates with Roboflow and downloads the specified dataset version.
@@ -62,6 +70,7 @@ def download_dataset(workspace_name: str, project_name: str, version_num: int, a
         raise ValueError("Error: you must provide either '--rf_key' or ensure the dataset exists on github")
 
 
+# USING BASE MODEL FOR EVALUATION 
 def _get_or_download_base_model(base_model_path: str = BASE_MODEL_NAME):
     '''
         Checks if the base model exists locally, if not downloads it from Ultralytics.
@@ -72,31 +81,72 @@ def _get_or_download_base_model(base_model_path: str = BASE_MODEL_NAME):
         print(f"Base model '{base_model_path}' not found. Downloading...")
         temp_model = YOLO("yolo26n.pt")
         temp_model.save(base_model_path)
+        if os.path.exists("yolo26n.pt"):
+            os.remove("yolo26n.pt")
     base_model = YOLO(base_model_path)
     return base_model
+
+def _get_val_images(dataset_path: str):
+    '''Extracts validation images from the dataset directory'''
+    val_images_dir = os.path.join(dataset_path, "valid", "images")
+    val_images = []
+    
+    if os.path.exists(val_images_dir):
+        for file in os.listdir(val_images_dir):
+            if file.lower().endswith(('.jpg', '.jpeg', '.png')):
+                val_images.append(os.path.join(val_images_dir, file))
+                
+    return val_images
+def _load_ground_truth(label_path: str, img_w: int, img_h: int):
+    '''Loads ground truth bounding boxes and labels from the label file'''
+    gt_boxes, gt_labels = [], []
+    if os.path.exists(label_path):
+        with open(label_path, "r", encoding="utf-8") as f:
+            for line in f:
+                parts = line.strip().split()
+                if len(parts) >= 5:
+                    ## map any ground-truth bird species (0, 1, 2, ...) to COCO's bird class ID (14)
+                    x_center, y_center, w, h = map(float, parts[1:5])
+
+                    ## denormalization for torchmetrics
+                    xmin = (x_center - w / 2) * img_w
+                    ymin = (y_center - h / 2) * img_h
+                    xmax = (x_center + w / 2) * img_w
+                    ymax = (y_center + h / 2) * img_h
+
+                    gt_boxes.append([xmin, ymin, xmax, ymax])
+                    gt_labels.append(14)
+    return gt_boxes, gt_labels
+def _get_model_predictions(base_model, img_path: str):
+    '''Runs inference on the base model and returns predicted boxes, scores, and labels''' 
+    results = base_model.predict(source=img_path, verbose=False)
+    pred_boxes, pred_scores, pred_labels = [], [], []
+
+    if results and len(results) > 0 and results[0].boxes is not None:
+        boxes_data = results[0].boxes
+        xyxy = boxes_data.xyxy.cpu().numpy()
+        conf = boxes_data.conf.cpu().numpy()
+        cls = boxes_data.cls.cpu().numpy().astype(int)
+
+        for box, score, c in zip(xyxy, conf, cls):
+            ## keep ONLY bird detections (class 14 from COCO), ignore cars, cats, dogs, etc, because our datasets dont have other classes
+            if c == 14:
+                pred_boxes.append(box.tolist())
+                pred_scores.append(float(score))
+                pred_labels.append(c)
+
+    return pred_boxes, pred_scores, pred_labels
 
 def evaluate_base_model(dataset_path: str):
     '''
         Evaluates the base YOLO model on the validation set of the custom dataset.
         Computes mAP, Precision, Recall, and F1-score using torchmetrics.
     '''
-    import torch 
-    from torchmetrics.detection import MeanAveragePrecision
-    from pathlib import Path
-    from PIL import Image
-
     base_model = _get_or_download_base_model()
-
     metric = MeanAveragePrecision(box_format="xyxy")
 
-    val_images_dir = os.path.join(dataset_path, "valid", "images")
+    val_images = _get_val_images(dataset_path)
     val_labels_dir = os.path.join(dataset_path, "valid", "labels")
-
-    val_images = []
-    if os.path.exists(val_images_dir):
-        for file in os.listdir(val_images_dir):
-            if file.lower().endswith(('.jpg', '.jpeg', '.png')):
-                val_images.append(os.path.join(val_images_dir, file))
 
     total_gt_boxes = 0
     total_pred_boxes = 0
@@ -109,25 +159,7 @@ def evaluate_base_model(dataset_path: str):
         txt_name = Path(img_path).stem + ".txt"
         label_path = os.path.join(val_labels_dir, txt_name)
 
-        gt_boxes, gt_labels = [], []
-
-        if os.path.exists(label_path):
-            with open(label_path, "r", encoding="utf-8") as f:
-                for line in f:
-                    parts = line.strip().split()
-                    if len(parts) >= 5:
-                        ## map any ground-truth bird species (0, 1, 2, ...) to COCO's bird class ID (14)
-                        x_center, y_center, w, h = map(float, parts[1:5])
-
-                        ## denormalization for torchmetrics
-                        xmin = (x_center - w / 2) * img_w
-                        ymin = (y_center - h / 2) * img_h
-                        xmax = (x_center + w / 2) * img_w
-                        ymax = (y_center + h / 2) * img_h
-
-                        gt_boxes.append([xmin, ymin, xmax, ymax])
-                        gt_labels.append(14)
-
+        gt_boxes, gt_labels = _load_ground_truth(label_path, img_w, img_h)
         total_gt_boxes += len(gt_boxes)
 
         target = [
@@ -146,49 +178,32 @@ def evaluate_base_model(dataset_path: str):
         ]
 
         ## inference for base model
-        results = base_model.predict(source=img_path, verbose=False)
-        pred_boxes = []
-        pred_scores = []
-        pred_labels = []
-
-        if results and len(results) > 0 and results[0].boxes is not None:
-            boxes_data = results[0].boxes
-            xyxy = boxes_data.xyxy.cpu().numpy()
-            conf = boxes_data.conf.cpu().numpy()
-            cls = boxes_data.cls.cpu().numpy().astype(int)
-
-            for box, score, c in zip(xyxy, conf, cls):
-                ## keep ONLY bird detections (class 14 from COCO), ignore cars, cats, dogs, etc, because our datasets dont have other classes
-                if c == 14:
-                    pred_boxes.append(box.tolist())
-                    pred_scores.append(float(score))
-                    pred_labels.append(c)
-
+        pred_boxes, pred_scores, pred_labels = _get_model_predictions(base_model, img_path)
         total_pred_boxes += len(pred_boxes)
+
+        preds = [
+            {
+                "boxes": (
+                    torch.tensor(pred_boxes, dtype=torch.float32)
+                    if pred_boxes
+                    else torch.empty((0, 4), dtype=torch.float32)
+                ),
+                "scores": (
+                    torch.tensor(pred_scores, dtype=torch.float32)
+                    if pred_scores
+                    else torch.empty((0,), dtype=torch.float32)
+                ),
+                "labels": (
+                    torch.tensor(pred_labels, dtype=torch.int64)
+                    if pred_labels
+                    else torch.empty((0,), dtype=torch.int64)
+                ),
+            }
+        ]
 
         ## count for basic Precision/Recall calculation
         if len(gt_boxes) > 0 and len(pred_boxes) > 0:
             matched_tp += min(len(gt_boxes), len(pred_boxes))
-
-            preds = [
-                {
-                    "boxes": (
-                        torch.tensor(pred_boxes, dtype=torch.float32)
-                        if pred_boxes
-                        else torch.empty((0, 4), dtype=torch.float32)
-                    ),
-                    "scores": (
-                        torch.tensor(pred_scores, dtype=torch.float32)
-                        if pred_scores
-                        else torch.empty((0,), dtype=torch.float32)
-                    ),
-                    "labels": (
-                        torch.tensor(pred_labels, dtype=torch.int64)
-                        if pred_labels
-                        else torch.empty((0,), dtype=torch.int64)
-                    ),
-                }
-            ]
 
         metric.update(preds, target)
 
@@ -215,6 +230,7 @@ def evaluate_base_model(dataset_path: str):
     print(f"F1-score:            {f1:.4f}")
 
 
+# FINE-TUNING YOLO MODEL AND SAVING BEST WEIGHTS
 def finetune_yolo_model(
         data_yaml_path: str, 
         epochs: int, 
@@ -262,17 +278,17 @@ def save_best_weights(source_dir: str = "runs/bird_detection", target_path: str 
         print("Error: Best weights not found. Please check the training process.")
 
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train YOLO26n for bird detection")
-
+def parse_args() -> argparse.Namespace:
+    '''Parses command line arguments for training the YOLO model'''
     # load the .env file and get the Roboflow Api key from it
     load_dotenv(find_dotenv())
     ROBOFLOW_KEY = os.getenv("ROBOFLOW_KEY")
 
+    parser = argparse.ArgumentParser(description="Train YOLO model for bird detection")
     # add command line arguments for the Roboflow dataset parameters
-    parser.add_argument("--workspace", type=str, help="Roboflow workspace name for dataset (default: sasha-litvak)", default="sasha-litvak")
-    parser.add_argument("--project", type=str, help="Roboflow project name for dataset (default: bird-detection-df9zw)", default="bird-detection-df9zw")
-    parser.add_argument("--version", type=int, help="Roboflow dataset version number for dataset (default: 2 version)", default=2)
+    parser.add_argument("--workspace", type=str, help="Roboflow workspace name for dataset")
+    parser.add_argument("--project", type=str, help="Roboflow project name for dataset")
+    parser.add_argument("--version", type=int, help="Roboflow dataset version number for dataset")
     parser.add_argument("--rf_key", type=str, help="Roboflow API key (default: from .env file)", default=ROBOFLOW_KEY)
     parser.add_argument(
         "--repo_url", type=str, 
@@ -302,6 +318,10 @@ if __name__ == "__main__":
     parser.add_argument("--resume", action="store_true", help="Resume training from the last saved checkpoint if it exists")
 
     args = parser.parse_args()
+    return args
+
+if __name__ == "__main__":
+    args = parse_args()
 
     # PIPELINE: download dataset -> evaluate base model -> finetune base model -> save best model's weights
     data_path = download_dataset(

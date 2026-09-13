@@ -77,14 +77,13 @@ def _get_or_download_base_model(base_model_path: str = BASE_MODEL_NAME):
 
 def evaluate_base_model(dataset_path: str):
     '''
-        Evaluates the base YOLO model on the validation set of the provided dataset.
+        Evaluates the base YOLO model on the validation set of the custom dataset.
         Computes mAP, Precision, Recall, and F1-score using torchmetrics.
     '''
     import torch 
     from torchmetrics.detection import MeanAveragePrecision
     from pathlib import Path
     from PIL import Image
-    import glob
 
     base_model = _get_or_download_base_model()
 
@@ -94,8 +93,10 @@ def evaluate_base_model(dataset_path: str):
     val_labels_dir = os.path.join(dataset_path, "valid", "labels")
 
     val_images = []
-    for ext in ("*.jpg", "*.jpeg", "*.png", "*.JPG", "*.JPEG", "*.PNG"):
-        val_images.extend(glob.glob(os.path.join(val_images_dir, ext)))
+    if os.path.exists(val_images_dir):
+        for file in os.listdir(val_images_dir):
+            if file.lower().endswith(('.jpg', '.jpeg', '.png')):
+                val_images.append(os.path.join(val_images_dir, file))
 
     total_gt_boxes = 0
     total_pred_boxes = 0
@@ -213,6 +214,7 @@ def evaluate_base_model(dataset_path: str):
     print(f"Recall:              {recall:.4f}")
     print(f"F1-score:            {f1:.4f}")
 
+
 def finetune_yolo_model(data_yaml_path: str, epochs: int, batch_size: int, img_size: int, patience: int, single_cls: bool):
     '''Performs fine-tuning of the pre-trained YOLO26n model on a custom dataset'''
     base_model = _get_or_download_base_model()
@@ -295,7 +297,7 @@ if __name__ == "__main__":
 
     is_single_cls = not args.multi_class
     finetune_yolo_model(
-        data_path=os.path.join(data_path, "data.yaml"),
+        data_yaml_path=os.path.join(data_path, "data.yaml"),
         epochs=args.epochs,
         batch_size=args.batch,
         img_size=args.img_size,

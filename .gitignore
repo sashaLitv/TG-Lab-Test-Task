@@ -3,3 +3,6 @@
 
 /data
 /runs
+
+weights/base.pt
+train_running.ipynb

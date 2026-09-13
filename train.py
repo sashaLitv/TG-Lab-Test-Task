@@ -215,24 +215,39 @@ def evaluate_base_model(dataset_path: str):
     print(f"F1-score:            {f1:.4f}")
 
 
-def finetune_yolo_model(data_yaml_path: str, epochs: int, batch_size: int, img_size: int, patience: int, single_cls: bool):
-    '''Performs fine-tuning of the pre-trained YOLO26n model on a custom dataset'''
-    base_model = _get_or_download_base_model()
+def finetune_yolo_model(
+        data_yaml_path: str, 
+        epochs: int, 
+        batch_size: int, 
+        img_size: int, 
+        patience: int, 
+        single_cls: bool,
+        save_period: int,
+        resume: bool,
+        last_checkpoint_path: str = "runs/bird_detection/weights/last.pt"
+    ):
+    '''Performs fine-tuning of the pre-trained YOLO26n model on a custom dataset with checkpoints'''
+    if resume and os.path.exists(last_checkpoint_path):
+        model = YOLO(last_checkpoint_path)
+        model.train(resume=True)
+    else:
+        if resume:
+            print(f"Warning: resume flag is set but last checkpoint '{last_checkpoint_path}' not found. Starting training from base model.")
+        base_model = _get_or_download_base_model()
+        base_model.train(
+            data=data_yaml_path, 
+            epochs=epochs,
+            batch=batch_size,
+            imgsz=img_size,
+            patience=patience,
+            single_cls=single_cls,
+            save_period=save_period,  
 
-    base_model.train(
-        data=data_yaml_path, 
-        epochs=epochs,
-        batch=batch_size,
-        imgsz=img_size,
-        patience=patience,
-
-        single_cls=single_cls,
-
-        project=os.path.abspath("runs"),        
-        name="bird_detection",
-        exist_ok=True, 
-        val=True 
-    )
+            project=os.path.abspath("runs"),        
+            name="bird_detection",
+            exist_ok=True, 
+            val=True 
+        )
 
 def save_best_weights(source_dir: str = "runs/bird_detection", target_path: str = "weights/best.pt"):
     '''Copies the best trained weights from the YOLO runs directory to the target weights directory '''
@@ -283,6 +298,9 @@ if __name__ == "__main__":
     parser.add_argument("--img_size", type=int, help="Image size for training (default: 640 like in default dataset)", default=640)
     parser.add_argument("--patience", type=int, help="Patience for training (default: 3)", default=3)
 
+    parser.add_argument("--save_period", type=int, help="Save checkpoint every X epochs (default: -1, disabled)", default=-1)
+    parser.add_argument("--resume", action="store_true", help="Resume training from the last saved checkpoint if it exists")
+
     args = parser.parse_args()
 
     # PIPELINE: download dataset -> evaluate base model -> finetune base model -> save best model's weights
@@ -296,12 +314,14 @@ if __name__ == "__main__":
     evaluate_base_model(data_path if args.eval_path is None else args.eval_path)
 
     is_single_cls = not args.multi_class
-    finetune_yolo_model(
+    results = finetune_yolo_model(
         data_yaml_path=os.path.join(data_path, "data.yaml"),
         epochs=args.epochs,
         batch_size=args.batch,
         img_size=args.img_size,
         patience=args.patience,
-        single_cls=is_single_cls
+        single_cls=is_single_cls,
+        save_period=args.save_period,
+        resume=args.resume
     )
     save_best_weights()

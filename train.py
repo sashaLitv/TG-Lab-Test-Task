@@ -11,10 +11,8 @@ from ultralytics import YOLO
 
 
 # CONSTANTS
-MY_DATASET_DIR_NAME = "Bird Detection"    
-MY_DATASET_ARCHIVE_NAME = "Bird.Detection"
-DATASET_DIR_NAME = "Bird Detection 8classes"    
-DATASET_ARCHIVE_NAME = "Bird.Detection.8classes"
+DATASET_DIR_NAME = "Bird Detection 8 classes"    
+DATASET_ARCHIVE_NAME = "Bird.Detection.8.classes"
 BASE_MODEL_NAME = "weights/base.pt"
 FINETUNED_MODEL_NAME = "weights/best.pt"
 
@@ -250,6 +248,7 @@ def finetune_yolo_model(
         if resume:
             print(f"Warning: resume flag is set but last checkpoint '{last_checkpoint_path}' not found. Starting training from base model.")
         base_model = _get_or_download_base_model()
+        
         base_model.train(
             data=data_yaml_path, 
             epochs=epochs,
@@ -264,6 +263,15 @@ def finetune_yolo_model(
             exist_ok=True, 
             val=True 
         )
+
+        ## overwrite the class name directly in the saved weights file
+        if single_cls:
+            best_weights_path = os.path.join(os.path.abspath("runs"), "bird_detection", "weights", "best.pt")
+            if os.path.exists(best_weights_path):
+                trained_model = YOLO(best_weights_path)
+                trained_model.names[0] = "bird"
+                trained_model.save(best_weights_path)
+                print("Class name successfully updated to 'bird' in best.pt")
 
 def save_best_weights(source_dir: str = "runs/bird_detection", target_path: str = "weights/best.pt"):
     '''Copies the best trained weights from the YOLO runs directory to the target weights directory '''

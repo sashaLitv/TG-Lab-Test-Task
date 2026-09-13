@@ -21,22 +21,26 @@ def predict_video(model_path: str, input_path: str, save_dir: str, **kwargs):
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         dynamic_name = f"{input_name}_{timestamp}"
 
-    model.predict(
+    results=model.predict(
         source=input_path, 
         save=True, 
-        project=save_dir,
+        save_dir=os.path.abspath(save_dir),
         name=dynamic_name,
         show_conf=True,
         show_labels=True,
-        
+        verbose=False,
+        stream=True,
         conf=kwargs.get('confidence_threshold', 0.5),
         iou=kwargs.get('iou_threshold', 0.7),
         vid_stride=kwargs.get('video_stride', 1)
     )
 
+    for _ in results:
+        pass
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run YOLO video tracking with ByteTrack and count unique birds.")
-    parser.add_argument("--input-file", type=str, required=True, help="Path to the input video file")
+    parser.add_argument("--input_file", type=str, required=True, help="Path to the input video file")
     parser.add_argument("--output_dir", type=str, default="examples", help="Directory to save output video (default: 'examples')")
     parser.add_argument("--output_file", type=str, default=None, help="Name of the output video file (default: None, will use input name with timestamp)")
     parser.add_argument("--model", type=str, default="weights/best.pt", help="Path to trained YOLO model weights")
@@ -47,10 +51,10 @@ if __name__ == "__main__":
 
     predict_video(
         model_path=args.model,
-        input_path=args.input,
+        input_path=args.input_file,
         save_dir=args.output_dir,
         stride=args.stride,
-        conf=args.conf,
         output_file=args.output_file,
+        conf=args.conf,
     )
 
